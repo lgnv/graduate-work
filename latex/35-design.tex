@@ -1,0 +1,135 @@
+\definecolor{gray}{rgb}{0.4,0.4,0.4}
+\definecolor{darkblue}{rgb}{0.0,0.0,0.6}
+\definecolor{cyan}{rgb}{0.0,0.6,0.6}
+\lstloadlanguages{C,C++,csh,Java}
+
+\definecolor{red}{rgb}{0.6,0,0} 
+\definecolor{blue}{rgb}{0,0,0.6}
+\definecolor{green}{rgb}{0,0.8,0}
+\definecolor{cyan}{rgb}{0.0,0.6,0.6}
+
+\lstset{
+  basicstyle=\ttfamily,
+  columns=fullflexible,
+  showstringspaces=false,
+  commentstyle=\color{gray}\upshape
+}
+
+\lstdefinelanguage{XML}
+{
+  morestring=[b]",
+  morestring=[s]{>}{<},
+  morecomment=[s]{<?}{?>},
+  stringstyle=\color{black},
+  identifierstyle=\color{darkblue},
+  keywordstyle=\color{cyan},
+  morekeywords={xmlns,version,type}% list your attributes here
+}
+
+
+
+\section{Проектирование решения}
+\label{cha:design}
+
+
+В этом разделе спроектировано решение в рамках принятых в системе Ulearn паттернов.
+\\
+
+
+Исходя из рассмотренной структуры в пункте 1.2.1 становится ясно, что задачи должны находиться на слайде типа Exercise. Дальнейшие шаги имеют несколько вариантов реализации. Рассмотрим их и выделим плюсы и минусы каждого.
+
+\begin{enumerate}
+\item Создать новый тип задач, который будет независим от уже существующих в системе. Прописать его типизацию в xsd-схеме. Создать сущность для обработки конфигурации, реализующую контракт ISlide. А так же реализовать систему проверки;
+\\ \textbf{Плюсы:}
+     \begin{enumerate}                  
+         \item Автору при заполнении xml-файла не будет подсказываться ничего лишнего, относящегося к другим типам задач.
+    \end{enumerate}
+\\ \textbf{Минусы:}
+    \begin{enumerate}
+        \item Нарушение принципа DRY, так как большую часть логики можно было переиспользовать из уже реализованной в системе.
+    \end{enumerate}
+\item Внести логику реализуемых задач внутрь сущностей типа UniversalExercise;
+\\ \textbf{Плюсы:}
+     \begin{enumerate}                  
+         \item Логика системы переиспользуется;
+         \item сокращается количество кода, которое необходимо написать.
+    \end{enumerate}
+\\ \textbf{Минусы:}
+    \begin{enumerate}
+        \item Нарушение принципа SRP, так как в нашей конфигурации будет поля, которые не нужны в UniversalExercise и наоборот.
+    \end{enumerate}
+    
+\item Создать новый тип задач, сделать его наследником типа UniversalExercise и в xsd-схеме и в обработке конфигурации (так как остальные специализированы только на проверке задач, реализованных на языке C\#);
+\\ \textbf{Плюсы:}
+     \begin{enumerate}                  
+         \item Логика системы переиспользуется;
+         \item сокращается количество кода, которое необходимо написать.
+    \end{enumerate}
+\\ \textbf{Минусы:}
+    \begin{enumerate}
+        \item Автор при создании слайда в xml будет видеть в подсказки, которые не участвуют в конфигурации нашей задачи.
+    \end{enumerate}
+\end{enumerate}
+
+Проанализировав данные варианты было принято решение совместить вариант а) и вариант в). В результате получается решение: \\
+Создать новый тип задач, сделать его наследником типа UniversalExercise в обработке конфигурации, но прописать для него независимую типизацию в xsd-схеме. Таким образом единственный минус варианта в) будет решен.			
+			
+% \paragraph{Проверка} параграфа. Вроде работает.
+% \paragraph{Вторая проверка} параграфа. Опять работает.
+
+% Вот.
+
+% \begin{itemize}
+% \item Это список с <<палочками>>.
+% \item Хотя он и не по ГОСТ, кажется.
+% \end{itemize}
+
+% \begin{enumerate}
+% \item Поэтому для списка, начинающегося с заглавной буквы, лучше список с цифрами.
+% \end{enumerate}
+
+% Формула \ref{F:F1} совершено бессмысленна.
+
+% %Кстати, при каких-то условиях <<удавалось>> получить двойный скобки вокруг номеров формул. Вопрос исследуется.
+
+% \begin{equation}
+% a= cb
+% \label{F:F1}
+% \end{equation}
+
+
+% Окружение \texttt{cases} опять работает (см. \ref{F:F2}), спасибо И. Короткову за исправления..
+
+
+% \begin{equation}
+% a= \begin{cases}
+%  3x + 5y + z, \mbox{если хорошо} \\
+%  7x - 2y + 4z, \mbox{если плохо}\\
+%  -6x + 3y + 2z, \mbox{если совсем плохо}
+% \end{cases}
+% \label{F:F2}
+% \end{equation}
+
+% \section{Подсистема всякой ерунды}
+
+% Культурная вставка dot-файлов через утилиту dot2tex (рис.~\ref{fig:fig02}).
+
+% \begin{figure}
+%   \centering
+% % [width=0.5\textwidth] --- регулировка ширины картинки
+%   \includegraphics{figures/pic01}
+%   \caption{Рисунок}
+%   \label{fig:fig02}
+% \end{figure}
+
+
+% \subsection{Блок-схема всякой ерунды}
+
+% \subsubsection*{Кстати о заголовках}
+
+% У нас есть и \Code{subsubsection}. Только лучше её не нумеровать.
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "rpz"
+%%% End:

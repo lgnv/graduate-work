@@ -1,0 +1,235 @@
+\definecolor{gray}{rgb}{0.4,0.4,0.4}
+\definecolor{darkblue}{rgb}{0.0,0.0,0.6}
+\definecolor{cyan}{rgb}{0.0,0.6,0.6}
+\lstloadlanguages{C,C++,csh,Java}
+
+\lstset{
+  basicstyle=\ttfamily,
+  columns=fullflexible,
+  showstringspaces=false,
+  commentstyle=\color{gray}\upshape
+}
+
+\lstdefinelanguage{XML}
+{
+  morestring=[b]",
+  morestring=[s]{>}{<},
+  morecomment=[s]{<?}{?>},
+  stringstyle=\color{black},
+  identifierstyle=\color{darkblue},
+  keywordstyle=\color{cyan},
+  morekeywords={xmlns,version,type}% list your attributes here
+}
+
+\section{Инфраструктура Ulearn}
+\label{cha:design}
+
+
+В этом разделе описана текущая инфраструктура в образовательной системе Ulearn, а именно
+\begin{enumerate}
+\item как создаются слайды курса;
+\item как происходит их обработка;
+\item как осуществляется проверка отправленного студентом решения.
+\end{enumerate}
+
+
+\subsection{Структура курса}
+Курс в системе Ulearn состоит из множества слайдов, каждый из которых может быть одним из трех типов:
+\begin{enumerate}
+\item Lesson — теоретический слайд-урок;
+\item Quiz — тест с вопросами разных типов;
+\item Exercise — задача на программирование.
+\end{enumerate}
+
+Задачи на программирование делятся на 3 типа: 
+\begin{enumerate}
+\item SingleFileExercise — задача на языке C\# из одного файла, где проверяется, что вывод равен константе;
+\item CsProjectExercise — задача на языке C\#;
+\item UniversalExercise — задача на языке, который определен конфигурацией docker-образа под эту задачу.
+\end{enumerate}
+
+Каждому слайду соответствует xml-файл, который задает тип слайда, информацию, которая будет показана при его отображении и прочие данные. 
+
+Типизация объектов в xml-файле задаётся в соответствующей xsd-схеме.
+
+Рассмотрим несколько конфигурации нескольких типов слайдов.
+Первый тип представлен в листинге 1.4.
+
+\begin{lstlisting}[caption={Пример xml-файла lesson-слайда}, language={XML}]
+<?xml version='1.0' encoding='UTF-8'?>
+<slide xmlns="https://ulearn.me/schema/v2" title="Theory" id="7ac1f6d9-41d6-4309-8eda-8786ccc3f990">
+    <markdown>
+        // Slide data
+    </markdown>
+</slide>
+\end{lstlisting}
+
+В данной xml-разметке находится главный тег — slide у которого присутствуют обязательные атрибуты: title (название данного слайда) и id (уникальный идентификатор слайда). Внутри тега slide находится тег markdown в который можно размещаться всю информационную нагрузку слайда: текст, ссылки и тд.
+\begin{lstlisting}[caption={Пример xml-файла exercise-слайда}, language={XML}]
+<?xml version="1.0"?>
+<slide.exercise id="717f67cc-f53f-45e3-92f1-8fa20572c6d5" title="Practice" xmlns="https://ulearn.me/schema/v2">
+  <scoring group="exercise" passedTestsScore="2" codeReviewScore="8"/>
+  <markdown>
+    // Task information
+  </markdown>
+  <exercise.universal exerciseDirName="src/01_fahrenheit" noStudentZip="true">
+    <hideSolutions>true</hideSolutions>
+    <hideExpectedOutput>true</hideExpectedOutput>
+    <userCodeFile>task.js</userCodeFile>
+    <includePathForChecker>../TestsRunner</includePathForChecker>
+    <dockerImageName>js-sandbox</dockerImageName>
+    <run>node docker-test-runner.js</run>
+    <region>Task</region>
+  </exercise.universal>
+</slide.exercise>
+\end{lstlisting}
+
+В разметке слайда типа exercise, который представлен в листинге 1.5, различия начинаются с главного тега: вместо slide в данном типе находится slide.exercise. \\ Внутри slide.exercise, помимо уже известного markdown, присутствуют блоки: scoring — тег, отвечающий за конфигурацию расчета баллов для этой задачи, exercise.universal — тег, вместе со своими аттрибутами и вложенными тегами, отвечают за конфигурацию самого задания, механизма проверки и тд.
+
+\subsection{Обработка конфигурации слайдов}
+
+За обработку конфигураций слайдов ответственны сущности реализующие следующий контракт, представленный на листинге 1.6:
+
+\begin{lstlisting}[caption={Контракт конфигуратора слайдов}]
+public interface ISlide
+	{
+		Guid Id { get; }
+		string Title { get; }
+		SlideBlock[] Blocks { get; }
+		
+		void Validate(SlideLoadingContext context);
+		void BuildUp(SlideLoadingContext context);
+	}
+\end{lstlisting}
+
+Метод Validate отвечают за проверку корректности заполнения конфигурации.
+А BuildUp — за логику построения по данным конфигурации html-разметки.
+
+
+\subsection{Обработка конфигурации блоков}
+За обработку конфигураций блоков внутри слайда ответственны сущности, которые наследуются абстрактного класса SlideBlock. Главные пункты этого класса соответствуют конфигураторам слайдов: методы Validate и BuildUp.
+
+\subsection{Проверка решения студента}
+
+После того как пользователь ввел своё решение в редактор сервиса и нажал кнопку "Отправить"     вызывается метод RunSolution контроллера ExerciseController, в который передаётся информация о курсе, слайде и отправленном решении. Его структура описана в листинге 1.7.
+
+\begin{lstlisting}[language={C}, caption={Сигнатура метода RunSolution}]
+public async Task<ActionResult<RunSolutionResponse>> RunSolution(
+			[FromRoute] Course course, 
+			[FromRoute] Guid slideId,
+			[FromBody] RunSolutionParameters parameters,
+			[FromQuery] Language language)
+			
+\end{lstlisting}
+
+Данный метод осуществляет некоторые первичные проверки отправленного кода: на размер, на то, что код этой задачи уже проверяется у текущего пользователя и тд. А после этого ставит ответ студента в очередь на проверку.
+
+Сервис RunCheckerJob с определенной частотой проверяет очередь отправленных решений. Если очередь непустая, то сервис забирает оттуда решение и запускает для него проверку в docker-контейнере. Во время запуска отправляет внутрь контейнера всё необходимое для проверки задачи: чеккер, решение студента и прочие файлы указанные при настройке задачи в xml-файле.
+
+В Листинге 1.8 представлен пример конфигурирования docker-образа. 
+Стоит обратить внимание на создание внутри образа нового пользователя student. Данный подход пригодится в дальнейшем, когда встанет задача конфигурирования образа и важно будет учесть права на чтения тестовых данных в режиме студента. 
+\begin{lstlisting}[caption={Dockerfile для проверки задач по курсу JavaScript}]
+FROM node:14-alpine
+
+RUN apk update && apk upgrade
+
+# Add new user for sandbox
+RUN addgroup -S student && adduser -S -g student student \
+    && chown -R student:student /home/student
+
+COPY ./app/ /app/
+
+RUN mkdir -p /source \
+    && chown -R student:student /app
+
+WORKDIR app
+
+# Run user as non privileged.
+USER student
+
+# Install deps for tests.
+RUN npm ci
+\end{lstlisting}
+
+Стоит заметить, что все чеккеры, необходимые для проверки решения студента должны быть написаны самим составителем курса и они будут специфичны для конкретного языка из-за зависимости от фреймворка тестирования.
+
+После проверки из docker-контейнера возвращается результат в RunCheckerJob по которому мы можем узнать статус решения.
+
+Бывают статусы, представленные в листинге 1.9:
+
+\begin{lstlisting}[caption={Модель описывающая статус решения}]
+public enum Verdict
+	{
+		Ok = 1,
+		CompilationError = 2,
+		RuntimeError = 3,
+		SecurityException = 4,
+		SandboxError = 5,
+		OutputLimit = 6,
+		TimeLimit = 7,
+		MemoryLimit = 8,
+		WrongAnswer = 9
+	}
+\end{lstlisting}
+
+Результат сохраняется в базу данных и отображается пользователю.			
+			
+% \paragraph{Проверка} параграфа. Вроде работает.
+% \paragraph{Вторая проверка} параграфа. Опять работает.
+
+% Вот.
+
+% \begin{itemize}
+% \item Это список с <<палочками>>.
+% \item Хотя он и не по ГОСТ, кажется.
+% \end{itemize}
+
+% \begin{enumerate}
+% \item Поэтому для списка, начинающегося с заглавной буквы, лучше список с цифрами.
+% \end{enumerate}
+
+% Формула \ref{F:F1} совершено бессмысленна.
+
+% %Кстати, при каких-то условиях <<удавалось>> получить двойный скобки вокруг номеров формул. Вопрос исследуется.
+
+% \begin{equation}
+% a= cb
+% \label{F:F1}
+% \end{equation}
+
+
+% Окружение \texttt{cases} опять работает (см. \ref{F:F2}), спасибо И. Короткову за исправления..
+
+
+% \begin{equation}
+% a= \begin{cases}
+%  3x + 5y + z, \mbox{если хорошо} \\
+%  7x - 2y + 4z, \mbox{если плохо}\\
+%  -6x + 3y + 2z, \mbox{если совсем плохо}
+% \end{cases}
+% \label{F:F2}
+% \end{equation}
+
+% \section{Подсистема всякой ерунды}
+
+% Культурная вставка dot-файлов через утилиту dot2tex (рис.~\ref{fig:fig02}).
+
+% \begin{figure}
+%   \centering
+% % [width=0.5\textwidth] --- регулировка ширины картинки
+%   \includegraphics{figures/pic01}
+%   \caption{Рисунок}
+%   \label{fig:fig02}
+% \end{figure}
+
+
+% \subsection{Блок-схема всякой ерунды}
+
+% \subsubsection*{Кстати о заголовках}
+
+% У нас есть и \Code{subsubsection}. Только лучше её не нумеровать.
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "rpz"
+%%% End:

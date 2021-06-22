@@ -1,0 +1,481 @@
+\definecolor{gray}{rgb}{0.4,0.4,0.4}
+\definecolor{darkblue}{rgb}{0.0,0.0,0.6}
+\definecolor{cyan}{rgb}{0.0,0.6,0.6}
+\lstloadlanguages{C,C++,csh,Java}
+
+\definecolor{red}{rgb}{0.6,0,0} 
+\definecolor{blue}{rgb}{0,0,0.6}
+\definecolor{green}{rgb}{0,0.8,0}
+\definecolor{cyan}{rgb}{0.0,0.6,0.6}
+
+\lstset{
+  basicstyle=\ttfamily,
+  columns=fullflexible,
+  showstringspaces=false,
+  commentstyle=\color{gray}\upshape
+}
+
+\lstdefinelanguage{XML}
+{
+  morestring=[b]",
+  morestring=[s]{>}{<},
+  morecomment=[s]{<?}{?>},
+  stringstyle=\color{black},
+  identifierstyle=\color{darkblue},
+  keywordstyle=\color{cyan},
+  morekeywords={xmlns,version,type}% list your attributes here
+}
+
+
+\section{Техническая реализация}
+\label{cha:impl}
+
+В этом разделе описана техническая часть работы, реализованная в рамках спроектированных в прошлом пункте идей.
+
+
+\subsection{Xsd-схема блока задачи}
+
+Как можно увидеть в Листинге 1.10 типизация тега slide.polygon не наследуется ни от каких других типов, а значит автору будет подсказываться только то, что действительно нужно.
+
+\begin{lstlisting}[caption={Реализация xsd-схемы тега slide.polygon}, language={XML}]
+<xs:element name="slide.polygon" type="PolygonSlide" />
+<xs:complexType name="PolygonSlide">
+	<xs:all>
+		<xs:element name="scoring"type="ExerciseScoring" minOccurs="0"/>
+		<xs:element name="polygonPath"type="xs:string"/>
+		<xs:element name="markdown"type="MarkdownBlock" minOccurs="0"/>
+		<xs:element name="exercise.polygon"type="PolygonExercise" />
+	</xs:all>
+	<xs:attribute name="id" type="NonEmptyString"use="required" />
+	<xs:attribute name="hide" type="xs:boolean" />
+</xs:complexType>
+\end{lstlisting}
+
+\subsection{Обработка конфигурации слайда}
+
+За обработку конфигурации слайдов с задачами отвечает сущность ExerciseSlide. Если задачи типа UniversalExercise, то внутри ExerciseSlide находится блок  поэтому необходимо наш конфигуратор PolygonExerciseSlide отнаследовать от него.
+
+
+Первая задача, которую нужно решить для генерации слайда — получить доступ к данным о задаче. Для этого вынесем свойство нашей сущности путь до директории с этой информацией.
+
+На этапе валидации слайда необходимо знать, что автор курса не забыл про это поле и указал его. Поэтому оно проверяется явно. Это представлено на листинге 1.11.
+
+\begin{lstlisting}[caption={Проверка полей}]
+    [XmlElement("polygonPath")]
+    public string PolygonPath { get; set; }
+    public override void Validate(SlideLoadingContext context)
+		{
+			if (string.IsNullOrEmpty(PolygonPath))
+				throw new CourseLoadingException("polygonPath not found in slide.polygon");
+			base.Validate(context);
+		}
+\end{lstlisting}
+
+Полный текст задачи генерируется автоматически благодаря вложенной в архив задачи информации. В рассмотренном листинге 1.1 показано, что существует файлы problem.html и problem-statements.css, которые находятся по пути /statements/.html/russian/problem.html и /statements/.html/russian/problem-statements.html соответственно. Они определяют визуальное представление задачи, которое состоит из легенды, примеров входных и выходных данных, информации об ограничениях задачи.
+Эти файлы используются в нашей обработке конфигурации: файлы читаются и их содержимое подставляется в html-код, выводящийся пользователю.
+
+Оставлена возможность для автора курса на своё усмотрение переопределить выводящуюся пользователю информацию. Для этого ему необходимо внутри слайда добавить тег markdown с необходимыми данными и он будет рассматриваться приемущественнее, чем текст в архиве задачи.
+
+Так же если в архиве задачи есть визуальное представление в виде pdf, то пользователю дается ссылка на этот файл.\\
+
+Эта логика представлена в листинге 1.12.
+\begin{lstlisting}[caption={Формирование блоков}]
+private IEnumerable<SlideBlock> GetBlocksProblem(
+        string statementsPath, 
+        string courseId, 
+        Guid slideId)
+		{
+			var markdownBlock = Blocks.FirstOrDefault(block => block is MarkdownBlock);
+			if (markdownBlock != null)
+			{
+				yield return markdownBlock;
+			}
+			else if(Directory.Exists(Path.Combine(statementsPath, ".html")))
+			{
+				var htmlDirectoryPath = Path.Combine(statementsPath, ".html", "russian");
+				var htmlData = File.ReadAllText(
+				Path.Combine(htmlDirectoryPath, "problem.html"));
+				yield return RenderFromHtml(htmlData);
+			}
+
+			var pdfLink = PolygonPath + "/statements/.pdf/russian/problem.pdf";
+			yield return new MarkdownBlock($"[Download problem conditions in PDF format]({pdfLink})");
+		}
+\end{lstlisting}
+
+Далее описана непосредственно обработка конфигурации в методе BuildUp. Рассмотрим листинг 1.13. 
+
+\begin{lstlisting}[caption={Обработка конфигурации в PolygonExerciseSlide}]
+public override void BuildUp(SlideLoadingContext context)
+{
+	var statementsPath = Path.Combine(context.Unit.Directory.FullName, PolygonPath, "statements");
+			
+	Blocks = GetBlocksProblem(statementsPath, context.CourseId, Id)
+			.Concat(Blocks.Where(block => !(block is MarkdownBlock)))
+			.ToArray();
+			
+	var problem = GetProblem(
+		Path.Combine(context.Unit.Directory.FullName, PolygonPath, "problem.xml"), 
+		context.CourseSettings.DefaultLanguage
+	);
+
+	var polygonExercise = Blocks.Single(block => block is PolygonExerciseBlock) as PolygonExerciseBlock;
+			
+	polygonExercise!.ExerciseDirPath = Path.Combine(PolygonPath);
+	polygonExercise.TimeLimitPerTest = problem.TimeLimit;
+	polygonExercise.TimeLimit = (int)Math.Ceiling(problem.TimeLimit * problem.TestCount);
+	polygonExercise.UserCodeFilePath = problem.PathAuthorSolution;
+	polygonExercise.Language = LanguageHelpers.GuessByExtension(new FileInfo(polygonExercise.UserCodeFilePath));
+	polygonExercise.DefaultLanguage = context.CourseSettings.DefaultLanguage;
+	polygonExercise.RunCommand = $"python3.8 main.py {polygonExercise.Language} {polygonExercise.TimeLimitPerTest} {polygonExercise.UserCodeFilePath.Split('/', '\\')[1]}";
+			
+	Title = problem.Title;
+			
+	PrepareSolution(
+    	Path.Combine(context.Unit.Directory.FullName, PolygonPath, polygonExercise.UserCodeFilePath)
+	);
+
+	base.BuildUp(context);
+}
+
+\end{lstlisting}
+
+В строке 3 формируется путь до каталога statements.
+
+В строках 5-7, используя уже рассмотренный метод, генерируются блоки представления задачи.
+
+В строках 9-12 вызывается метод, который из файла problem.xml получает информацию о задаче: ограничение по времени на тест, количество тестов, название задачи, путь до авторского решения. 
+
+В строке 14 из множества блоков данного слайда получаю конфигуратор блока PolygonExercise и в строках 16-22 происходит его инициализация:
+\begin{enumerate}
+    \item пути до директории с данными задачи;
+    \item ограничении времени на тест и на выполнение всех тестов;
+    \item пути до авторского решения;
+    \item языка авторского решения и языка по-умолчанию(язык, который будет предложен пользователю курса в первую очередь);
+    \item команду для запуска проверяющей программы внутри docker-контейнера.
+\end{enumerate}
+
+В строках 26-28 происходит вызов метода PrepareSolution, задача которого обернуть авторского решение в region, как это представлено в листинге 1.14. Внутрь этого блока будет подставляться решение студента при отправке.
+\begin{lstlisting}[caption={Оборачивание кода в region}]
+\\region Task
+    Code
+\\endregion Task
+\end{lstlisting}
+
+Завершает метод вызов base.BuildUp, который конфигурируют всю остальную логику связанную с формированием слайдов.
+
+\subsection{Обработка конфигурации блока}
+
+За обработку конфигурации блока, как уже было сказано в прошлом пункте, отвечает класс PolygonExerciseBlock, который является потомком UniversalExerciseBlock.
+
+В данном классе расположена информация о языках, проверка на которых доступна студенту. Отрывок инициализации представлен в листинге 1.15.
+
+\begin{lstlisting}[caption={Отрывок инициализации LanguagesInfo}]
+public static Dictionary<Language, LanguageLaunchInfo> LanguagesInfo = new Dictionary<Language, LanguageLaunchInfo>
+		{
+			[Common.Language.Java] = new LanguageLaunchInfo
+			{
+				Compiler = "Java 14",
+				CompileCommand = "javac {source}",
+				RunCommand = "java {compilation-result-file}"
+			},
+			...
+		}
+\end{lstlisting}
+
+Наибольший интерес в данном классе представляют метод создания RunnerSubmission — сущности содержащую в себе информацию об отправке студентом кода на проверку и способе его запуска. Единственно, что входит в ответственность PolygonExerciseBlock в этой задаче — формирование команды запуска. Всё остальную логику выполняет UniversalExerciseBlock. Данная логика описана в листинге 1.16.
+
+\begin{lstlisting}[caption={Формирование RunnerSubmission}]
+public RunnerSubmission CreateSubmission(string submissionId, string code, Language language)
+{
+	var submission = 
+	    base.CreateSubmission(submissionId, code);
+	if (!(submission is CommandRunnerSubmission commandRunnerSubmission))
+		return submission;
+	
+	commandRunnerSubmission.RunCommand = RunCommandWithArguments(language);
+	
+	return commandRunnerSubmission;
+}
+
+private string RunCommandWithArguments(Language language)
+{
+	return $"python3.8 main.py {language} {TimeLimitPerTest} {UserCodeFilePath.Split('/', '\\')[1]}";
+}
+\end{lstlisting}
+
+Внутри Docker-контейнера будет выполняться команда, которая находится в свойстве RunCommand. Она запустит python-код и передаст ему в аргументы язык, на котором написано решение, ограничение по времени на тест, а так же путь до файла с решением.
+
+\subsection{Проверка решения студента}
+
+После отправки решения студентом, запускается docker-контейнер в который подкладывается отправленное решение и начинает выполнение проверяющая программа. 
+
+Рассмотрим конфигурацию из Dockerfile, описанную в листинге 1.17.
+
+\begin{lstlisting}[caption={Конфигурация docker-образа}]
+FROM ubuntu:20.04
+
+ENV NVM_DIR /usr/local/nvm
+ENV NODE_VERSION 14.15.3
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Ekaterinburg
+
+RUN apt-get update 
+&& apt-get -y upgrade
+&& apt-get install -y wget 
+&& apt-get -y install curl \
+# Python 3.8
+&& apt-get -y install python3.8 \ 
+# C, C++
+&& apt-get -y install build-essential \
+# C\#
+&& wget https://packages.microsoft.com/config
+    /ubuntu/20.10/packages-microsoft-prod.deb -O packages-microsoft-prod.deb \
+&& dpkg -i packages-microsoft-prod.deb \
+&& apt-get update && apt-get install -y apt-transport-https && apt-get install -y dotnet-sdk-5.0 \
+&& apt-get install -y apt-transport-https && apt-get install -y dotnet-runtime-5.0
+# Java
+RUN apt-get install -y openjdk-14-jdk \
+# JavaScript
+&& curl --silent -o- https://raw.githubusercontent.com
+    /creationix/nvm/v0.31.2/install.sh | bash \
+&& . $NVM_DIR/nvm.sh \
+&& nvm install $NODE_VERSION \
+&& nvm alias default $NODE_VERSION \
+&& nvm use default
+
+ENV NODE_PATH $NVM_DIR/v$NODE_VERSION/lib/node_modules
+ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
+ENV NODE_REPL_HISTORY ''
+
+COPY ./app/ /app/
+
+WORKDIR app
+
+RUN useradd student && chmod 700 /app/tests
+\end{lstlisting}
+
+Комментариями в коде помечены языки, которые становятся доступны после выполнения этих команд. 
+
+Обратим внимание на строку 39, в которой создается новый пользователь и устанавливаются права доступа на директорию с тестами. Таким образом обеспечивается невозможность получения тестовых данных из решения.
+
+Далее рассмотрим механизм проверки решения. 
+
+Первоочередная задача, которая возникает в процессе выполнения проверя — определить язык решения и команды для компиляции и выполнения исходного кода.
+
+Для инкапсуляции данных об этих командах был создан контракт ISourceCodeRunInfo. Рассмотрим листинге 1.18.
+\begin{lstlisting}[caption={Контракт ISourceCodeRunInfo}]
+class ISourceCodeRunInfo:
+    __metaclass__ = ABCMeta
+    @abstractmethod
+    def file_extension(self): pass
+    @abstractmethod
+    def format_build_command(self, 
+        code_filename: str, 
+        result_filename: str) -> str: pass
+    @abstractmethod
+    def need_build(self) -> bool: pass
+    @abstractmethod
+    def format_run_command(self, filename: str) -> str: pass
+\end{lstlisting}
+
+Метод \texttt{file\_extension} возвращает расширение файла с исходным кодом. \\
+Метод \texttt{format\_build\_command} выполняет задачу формирования команды для компилирования исходного кода. В случае если исходный код некомпилируемый, например, исходных код на языке Python, то возвращается None.\\
+Метод \texttt{format\_run\_command} возвращает команду для запуска решения.
+
+Приведу пример реализации данной сущность для языка C++ в листинге 1.19.
+
+\begin{lstlisting}[caption={Реализация ISourceCodeRunInfo для языка C++}]
+class CppRunInfo(ISourceCodeRunInfo):
+    def file_extension(self):
+        return '.cpp'
+    def format_run_command(self, filename: str) -> str:
+        return f'./{filename}'
+    def need_build(self) -> bool:
+        return True
+    def format_build_command(self, code_filename: str, result_filename: str) -> str:
+        return f'g++ -o {result_filename} -O2 {code_filename}'
+\end{lstlisting}
+
+Для поиска нужной реализации данного контракта по названию языка была написана функция \texttt{get\_run\_info\_by\_language\_name}, она представлена в листинге 1.20.
+\begin{lstlisting}[caption={Функция поиска по названию языка реализации ISourceCodeRunInfo}]
+def get_run_info_by_language_name(language_name: str) -> ISourceCodeRunInfo:
+    if language_name == 'cpp':
+        return CppRunInfo()
+    elif language_name == 'python3':
+        return PythonRunInfo()
+    ...
+\end{lstlisting}
+
+В листинге 1.21 представленн класс TaskCodeRunner, который реализует логику сборку, запуск кода и запуск теста, используя взаимодействие с процессами. 
+
+\begin{lstlisting}[caption={Сигнатура класса TaskCodeRunner}]
+class TaskCodeRunner:
+    def build(self, code_filename: str, result_filename: str): pass
+    def run(self, test_file: str): pass
+    def run_test(self, code_filename: str, test_file: str): pass
+\end{lstlisting}
+
+Проверка решения студента осуществляется по следующему алгоритму:
+\begin{enumerate}
+    \item сборка исходного кода чеккера check.cpp, который мы получили из директории задачи;
+    \item предобработка решения студента: удаления строк определения региона; в случае с java кодом переименование названия файла в соответствие с названием класса внутри файла;
+    \item получение ISourceCodeRunInfo по названию языка полученному в аргументах программы;
+    \item компиляция исходного кода студента, если это требуется
+    \item для каждого теста
+    \begin{enumerate}
+        \item запуск программы студента на этом тесте
+        \item сравнение результата выполнения с авторским решением используя чеккер
+    \end{enumerate}
+    \item обработка ошибок, при возникновении
+\end{enumerate}
+
+Результатом выполнения проверяющей программы является json, структура которого продемонстрирована в листинге 1.22.
+
+\begin{lstlisting}[caption={RunningResult}]
+{
+    "Verdict": "Ok" | "WrongAnswer" | "TimeLimit" | ...
+    "TestResultInfo": {
+            "TestNumber": "1" | "2" | ... ,
+            "Input": // test data,
+            "CorrectOutput": // correct test output ,
+            "StudentOutput": // student output
+        }
+}
+\end{lstlisting}
+
+\subsection{Логирование}
+
+Помимо этого, у авторов курсов могут возникнуть вопросы почему решение студента не проходит определенные тесты или подозрение в том, что система работает неправильно. Поэтому было реализовано логирование жизненного цикла проверяющей системы с выводом в интерфейс, но только для администраторов данного курса. 
+
+\subsection{Добавление нового языка}
+В дальнейшем у авторов может возникнуть желание добавить новый язык программирования, чтобы у студентов был еще более разнообразный выбор. Для встраивания еще одного языка следует выполнить следующие шаги для этого языка: 
+
+\begin{enumerate}
+    \item прописать команды установки окружния в dockerfile;
+    \item реализовать сущность ISourceCodeRunInfo;
+    \item прописать условие для обнаружения ISourceCodeRunInfo по названию языка в методе \texttt{get\_run\_info\_by\_language\_name};
+    \item в классе PolygonExerciseBlock прописать информацию о языке в поле LanguagesInfo.
+\end{enumerate}
+
+\subsection{Тестирование}
+
+Логика, реализованная в рамках данной работы, была протестирована несколькими методами. 
+
+\begin{enumerate}
+    \item логика работы docker-образа была проверена unit-тестом, который запускает его, отправляет туда тестовую задачу с авторским решением и проверяет, что результатом выполнения стал статус Ok;
+    \item курс для тестирования системы Ulearn был дополнен несколькими слайдами, где заложена возможность ручного тестирования данной логики.
+\end{enumerate}
+
+
+
+
+% В дfileанном разделе описано изготовление и требование всячины. Кстати,
+% в Latex нужно эскейпить подчёркивание (писать <<\verb|some\_function|>> для \Code{some\_function}).
+
+% \ifPDFTeX
+% Для вставки кода есть пакет \Code{listings}. К сожалению, пакет \Code{listings} всё ещё
+% работает криво при появлении в листинге русских букв и кодировке исходников utf-8.
+% В данном примере он (увы) на лету конвертируется в koi-8 в ходе сборки pdf.
+
+% Есть альтернатива \Code{listingsutf8}, однако она работает лишь с
+% \Code{\textbackslash{}lstinputlisting}, но не с окружением \Code{\textbackslash{}lstlisting}
+
+% Вот так можно вставлять псевдокод (питоноподобный язык определен в \Code{listings.inc.tex}):
+
+% \begin{lstlisting}[style=pseudocode,caption={Алгоритм оценки дипломных работ}]
+% def EvaluateDiplomas():
+%     for each student in Masters:
+%         student.Mark := 5
+%     for each student in Engineers:
+%         if Good(student):
+%             student.Mark := 5
+%         else:
+%             student.Mark := 4
+% \end{lstlisting}
+
+% Еще в шаблоне определен псевдоязык для BNF:
+
+% \begin{lstlisting}[style=grammar,basicstyle=\small,caption={Грамматика}]
+%   ifstmt -> "if" "(" expression ")" stmt |
+%             "if" "(" expression ")" stmt1 "else" stmt2
+%   number -> digit digit*
+% \end{lstlisting}
+
+% В листинге~\ref{lst:sample01} работают русские буквы. Сильная магия. Однако, работает
+% только во включаемых файлах, прямо в \TeX{} нельзя.
+
+% % Обратите внимание, что включается не ../src/..., а inc/src/...
+% % В Makefile есть соответствующее правило для inc/src/*,
+% % которое копирует исходные файлы из ../src и конвертирует из UTF-8 в KOI8-R.
+% % Кстати, поэтому использовать можно только русские буквы и ASCII,
+% % весь остальной UTF-8 вроде CJK и египетских иероглифов -- нельзя.
+
+% \lstinputlisting[language=C,caption=Пример (\Code{test.c}),label=lst:sample01]{listings/test.c}
+
+% \else
+
+% Для вставки кода есть пакет \texttt{minted}. Он хорош всем кроме: необходимости Python (есть во всех нормальных (нет, Windows, я не про тебя) ОС) и Pygments и того, что нормально работает лишь в \XeLaTeX.
+
+% Можно пользоваться расширенным BFN:
+
+% \begin{listing}[H]
+% \begin{ebnfcode}
+%  letter = "A" | "B" | "C" | "D" | "E" | "F" | "G"
+%       | "H" | "I" | "J" | "K" | "L" | "M" | "N"
+%       | "O" | "P" | "Q" | "R" | "S" | "T" | "U"
+%       | "V" | "W" | "X" | "Y" | "Z" ;
+% digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+% symbol = "[" | "]" | "{" | "}" | "(" | ")" | "<" | ">"
+%       | "'" | '"' | "=" | "|" | "." | "," | ";" ;
+% character = letter | digit | symbol | "_" ;
+ 
+% identifier = letter , { letter | digit | "_" } ;
+% terminal = "'" , character , { character } , "'" 
+%          | '"' , character , { character } , '"' ;
+ 
+% lhs = identifier ;
+% rhs = identifier
+%      | terminal
+%      | "[" , rhs , "]"
+%      | "{" , rhs , "}"
+%      | "(" , rhs , ")"
+%      | rhs , "|" , rhs
+%      | rhs , "," , rhs ;
+ 
+% rule = lhs , "=" , rhs , ";" ;
+% grammar = { rule } ;
+% \end{ebnfcode}
+% \caption{EBNF определённый через EBNF}
+% \label{lst:ebnf}
+% \end{listing}
+
+% А вот в листинге \ref{lst:c} на языке C работают русские комменты. Спасибо Pygments и Minted за это.
+
+% \begin{listing}[H]
+% \cfile{inc/src/test.c}
+% \caption{Пример — test.c} 
+% \end{listing}
+% \label{lst:c}
+
+% \fi
+
+% % Для вставки реального кода лучше использовать \texttt{\textbackslash lstinputlisting} (который понимает
+% % UTF8) и стили \Code{realcode} либо \Code{simplecode} (в зависимости от размера куска).
+
+
+
+
+% Можно также использовать окружение \Code{verbatim}, если \Code{listings} чем-то не
+% устраивает. Только следует помнить, что табы в нём <<съедаются>>. Существует так же команда \Code{\textbackslash{}verbatiminput} для вставки файла.
+
+% \begin{verbatim}
+% a_b = a + b; // русский комментарий
+% if (a_b > 0)
+%     a_b = 0;
+% \end{verbatim}
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "rpz"
+%%% End:
